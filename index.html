@@ -1,11 +1,436 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>My Website</title>
+  <meta charset="utf-8" />
+  <title>FSG 2025 Scores — EV & DV</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0b0f17;
+      --bg-soft:#121826;
+      --card:#0f172a;
+      --text:#e6edf6;
+      --muted:#a7b0c0;
+      --accent:#5b9bff;
+      --accent-2:#6ee7b7;
+      --danger:#ff6b6b;
+      --warning:#fbbf24;
+      --border:#223047;
+      --ok:#34d399;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:linear-gradient(180deg,#0b0f17 0%,#0b1120 100%);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji"}
+    .wrap{max-width:1200px;margin:32px auto;padding:0 16px}
+    header{
+      background:linear-gradient(135deg,rgba(91,155,255,.12),rgba(110,231,183,.12));
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:20px 20px;
+      display:flex;align-items:center;justify-content:space-between;gap:16px
+    }
+    .brand{display:flex;align-items:center;gap:14px}
+    .logo{
+      width:44px;height:44px;border-radius:10px;
+      background:conic-gradient(from 210deg,var(--accent),var(--accent-2));
+      box-shadow:0 0 0 2px rgba(91,155,255,.25) inset,0 10px 30px rgba(91,155,255,.2);
+    }
+    h1{font-size:20px;margin:0}
+    .sub{color:var(--muted);font-size:13px;margin-top:2px}
+    .tabs{display:flex;gap:8px}
+    .tab{
+      background:#0c1424;border:1px solid var(--border);color:var(--text);
+      padding:10px 14px;border-radius:10px;cursor:pointer;transition:.2s;
+    }
+    .tab.active{background:linear-gradient(180deg,#17223a,#121b31);border-color:#2a3b5a;box-shadow:0 4px 18px rgba(0,0,0,.35)}
+    .panel{
+      margin-top:16px;background:rgba(15,23,42,.6);border:1px solid var(--border);
+      border-radius:14px;padding:14px 14px 6px;
+    }
+    .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+    .pill{
+      border:1px solid var(--border);padding:8px 10px;border-radius:999px;color:var(--muted);background:#0c1424
+    }
+    .hint{color:var(--muted);font-size:12px}
+    table{width:100%;border-collapse:separate;border-spacing:0;margin-top:10px}
+    thead th{
+      position:sticky;top:0;background:#0f1629;border-bottom:1px solid var(--border);
+      padding:10px 10px;text-align:left;font-weight:600;font-size:12px;color:#b8c2d6;z-index:1
+    }
+    tbody td{padding:10px;border-bottom:1px solid #18223a;vertical-align:middle}
+    tbody tr:hover{background:#0e1527}
+    .num{text-align:right;white-space:nowrap}
+    .muted{color:var(--muted)}
+    .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;border:1px solid var(--border);background:#0c1424;color:#cfe0ff}
+    .pts{font-variant-numeric:tabular-nums}
+    .good{color:var(--ok)}
+    .bad{color:var(--danger)}
+    input[type="number"]{
+      width:92px;background:#0c1424;border:1px solid var(--border);border-radius:8px;padding:6px 8px;color:var(--text)
+    }
+    .tot{font-weight:700}
+    .rank{
+      width:32px;text-align:center;font-weight:700;color:#e2f2ff;border-right:1px solid var(--border)
+    }
+    .footer{color:var(--muted);font-size:12px;margin-top:10px}
+    .kbd{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;background:#0c1424;border:1px solid var(--border);padding:2px 6px;border-radius:6px}
+    .flex-col{display:flex;flex-direction:column;gap:8px}
+    .right{margin-left:auto}
+    .legend{display:flex;gap:10px;flex-wrap:wrap}
+    .legend .pill b{color:#eaf2ff}
+    .sticky-card{
+      position:sticky;top:56px;background:#0f172a;border:1px solid var(--border);border-radius:12px;padding:10px
+    }
+    @media (max-width:860px){
+      .hide-sm{display:none}
+      input[type="number"]{width:78px}
+    }
+  </style>
 </head>
 <body>
-<h1>Hello World, this is my first web page.</h1>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true"></div>
+        <div>
+          <h1>Formula Student 2025 — Scores</h1>
+          <div class="sub">EV & Driverless tabs • Time-based scoring • Manual static scores • Local save</div>
+        </div>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Cup selector">
+        <button class="tab active" role="tab" aria-selected="true" data-cup="EV">EV Cup</button>
+        <button class="tab" role="tab" aria-selected="false" data-cup="DV">DV Cup</button>
+      </div>
+    </header>
+
+    <div class="panel">
+      <div class="row">
+        <div class="legend">
+          <span class="pill"><b>Formula</b>&nbsp;Points = Max × (Tfast / Tteam)^2</span>
+          <span class="pill"><b>Penalties</b>&nbsp;Skidpad +0.2s, Accel +0.3s, Auto/End/Track +2.0s per cone</span>
+          <span class="pill"><b>Manual</b>&nbsp;Static scores are editable; saved locally</span>
+        </div>
+        <div class="right hint">Tip: Click a tab, edit static points, and refresh — your edits persist.</div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px;align-items:flex-start">
+      <div style="flex:1;min-width:280px">
+        <div id="tableHost"></div>
+        <div class="footer">
+          Data schema and scoring are configurable in code. Adjust maxPoints, penalties, or add events as needed.
+        </div>
+      </div>
+      <aside class="sticky-card hide-sm" style="width:320px">
+        <div class="flex-col">
+          <div class="pill"><b>How to edit data</b></div>
+          <div class="hint">In the script, update the DATA and CONFIG objects. Static fields are editable in the table and auto-saved to localStorage.</div>
+          <div class="pill"><b>Notes</b></div>
+          <ul class="hint" style="margin:0 0 0 18px;padding:0;">
+            <li>Only valid times count toward fastest time.</li>
+            <li>DNF/null times score 0.</li>
+            <li>Efficiency is manual by default for EV.</li>
+          </ul>
+          <div class="pill"><b>Export</b></div>
+          <div class="hint">Copy totals by selecting the table. You can also add your own JSON import/export easily.</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+    // ======== CONFIGURE EVENTS, POINTS, PENALTIES ========
+    // You can safely change labels, maxPoints, and penalties here.
+    const CONFIG = {
+      EV: {
+        label: "EV Cup",
+        timeEvents: {
+          acceleration: { label: "Acceleration", maxPoints: 75, conePenaltySec: 0.3 },
+          skidpad:     { label: "Skidpad",     maxPoints: 75, conePenaltySec: 0.2 },
+          autocross:   { label: "Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
+          endurance:   { label: "Endurance",   maxPoints: 275, conePenaltySec: 2.0 },
+        },
+        manualEvents: [
+          { key: "design",     label: "Design",     maxPoints: 150 },
+          { key: "cost",       label: "Cost",       maxPoints: 100 },
+          { key: "business",   label: "Business",   maxPoints: 75  },
+          { key: "efficiency", label: "Efficiency", maxPoints: 100 }, // set manual by default
+        ]
+      },
+      DV: {
+        label: "Driverless Cup",
+        timeEvents: {
+          acceleration: { label: "Acceleration", maxPoints: 75, conePenaltySec: 0.3 },
+          skidpad:     { label: "Skidpad",     maxPoints: 75, conePenaltySec: 0.2 },
+          autocross:   { label: "Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
+          trackdrive:  { label: "Trackdrive",  maxPoints: 250, conePenaltySec: 2.0 },
+        },
+        manualEvents: [
+          { key: "design",   label: "Design",   maxPoints: 150 },
+          { key: "cost",     label: "Cost",     maxPoints: 100 },
+          { key: "business", label: "Business", maxPoints: 75  },
+        ]
+      },
+      // Scoring model: points = maxPoints * (tFast / tTeam) ^ exponent
+      exponent: 2
+    };
+
+    // ======== SAMPLE DATA (edit to your 2025 results) ========
+    // Use null for missing/DNF time. 'cones' is optional; defaults to 0.
+    const DATA = {
+      EV: [
+        {
+          team: "TUfast Racing Team EV",
+          number: 1,
+          events: {
+            acceleration: { time: 3.61, cones: 0 },
+            skidpad:     { time: 4.85, cones: 0 },
+            autocross:   { time: 61.42, cones: 1 },
+            endurance:   { time: 1324.8, cones: 2 },
+          },
+          manual: { design: 135, cost: 89, business: 62, efficiency: 78 }
+        },
+        {
+          team: "AMZ Racing",
+          number: 2,
+          events: {
+            acceleration: { time: 3.54, cones: 1 },
+            skidpad:     { time: 4.78, cones: 0 },
+            autocross:   { time: 60.90, cones: 0 },
+            endurance:   { time: 1308.1, cones: 1 },
+          },
+          manual: { design: 142, cost: 92, business: 70, efficiency: 83 }
+        },
+        {
+          team: "Greenteam Stuttgart",
+          number: 3,
+          events: {
+            acceleration: { time: 3.70, cones: 0 },
+            skidpad:     { time: 4.92, cones: 1 },
+            autocross:   { time: 62.20, cones: 0 },
+            endurance:   { time: null, cones: 0 }, // DNF
+          },
+          manual: { design: 138, cost: 87, business: 65, efficiency: 0 }
+        }
+      ],
+      DV: [
+        {
+          team: "KA-RaceIng DV",
+          number: 201,
+          events: {
+            acceleration: { time: 5.25, cones: 0 },
+            skidpad:     { time: 6.10, cones: 0 },
+            autocross:   { time: 75.80, cones: 0 },
+            trackdrive:  { time: 920.4, cones: 3 },
+          },
+          manual: { design: 140, cost: 90, business: 64 }
+        },
+        {
+          team: "TUM Autonomous Motorsport",
+          number: 202,
+          events: {
+            acceleration: { time: 5.10, cones: 1 },
+            skidpad:     { time: 5.98, cones: 0 },
+            autocross:   { time: 74.20, cones: 1 },
+            trackdrive:  { time: 905.9, cones: 2 },
+          },
+          manual: { design: 145, cost: 95, business: 70 }
+        },
+        {
+          team: "UPC ecoRacing DV",
+          number: 203,
+          events: {
+            acceleration: { time: null, cones: 0 }, // DNF
+            skidpad:     { time: 6.30, cones: 0 },
+            autocross:   { time: 78.10, cones: 2 },
+            trackdrive:  { time: 955.7, cones: 0 },
+          },
+          manual: { design: 130, cost: 82, business: 60 }
+        }
+      ]
+    };
+
+    // ======== UTILITIES ========
+    const fmt1 = (x) => x === null || x === undefined ? "—" : x.toFixed(2);
+    const fmtPts = (x) => x.toFixed(1);
+    const safeCones = (v) => Number.isFinite(v) ? v : 0;
+
+    function adjustedTime(eventKey, run, cup){
+      if(!run || run.time === null || run.time === undefined) return null;
+      const cone = CONFIG[cup].timeEvents[eventKey]?.conePenaltySec ?? 0;
+      return run.time + safeCones(run.cones)*cone;
+    }
+
+    function fastestTimes(cup, teams){
+      const fastest = {};
+      const evts = Object.keys(CONFIG[cup].timeEvents);
+      evts.forEach(k=>{
+        let tmin = Infinity;
+        teams.forEach(team=>{
+          const t = adjustedTime(k, team.events[k], cup);
+          if(t !== null && t < tmin) tmin = t;
+        });
+        fastest[k] = (tmin===Infinity)? null : tmin;
+      });
+      return fastest;
+    }
+
+    function eventPoints(maxPoints, tFast, tTeam, exponent){
+      if(tFast===null || tTeam===null) return 0;
+      const ratio = tFast / tTeam;
+      const raw = maxPoints * Math.pow(Math.max(ratio, 0), exponent);
+      return Math.max(0, Math.min(maxPoints, raw));
+    }
+
+    function clampManual(val, max){
+      if(!Number.isFinite(val)) return 0;
+      return Math.max(0, Math.min(max, val));
+    }
+
+    const LSKEY = 'fsg2025_manual';
+
+    function loadManual(){
+      try { return JSON.parse(localStorage.getItem(LSKEY) || '{}'); }
+      catch(e){ return {}; }
+    }
+    function saveManual(store){
+      localStorage.setItem(LSKEY, JSON.stringify(store));
+    }
+
+    // ======== RENDERING ========
+    const host = document.getElementById('tableHost');
+    const tabs = document.querySelectorAll('.tab');
+    let currentCup = 'EV';
+
+    tabs.forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        tabs.forEach(b=>{ b.classList.toggle('active', b===btn); b.setAttribute('aria-selected', b===btn ? 'true' : 'false'); });
+        currentCup = btn.dataset.cup;
+        render(currentCup);
+      });
+    });
+
+    function render(cup){
+      const cfg = CONFIG[cup];
+      const teams = DATA[cup].map(x=>JSON.parse(JSON.stringify(x))); // shallow clone
+      const fastest = fastestTimes(cup, teams);
+      const store = loadManual();
+
+      // compute per-team event points and totals
+      teams.forEach(team=>{
+        team.points = { dynamic: {}, manual: {} };
+        let dynSum = 0;
+        for(const [key, eCfg] of Object.entries(cfg.timeEvents)){
+          const tAdj = adjustedTime(key, team.events[key], cup);
+          const pts = eventPoints(eCfg.maxPoints, fastest[key], tAdj, CONFIG.exponent);
+          team.points.dynamic[key] = { pts, tAdj };
+          dynSum += pts;
+        }
+        let manSum = 0;
+        cfg.manualEvents.forEach(m=>{
+          const lsKey = `${cup}::${team.team}::${m.key}`;
+          const lsVal = store[lsKey];
+          const initial = (team.manual && Number.isFinite(team.manual[m.key])) ? team.manual[m.key] : 0;
+          const val = clampManual(Number(lsVal ?? initial), m.maxPoints);
+          team.points.manual[m.key] = val;
+          manSum += val;
+        });
+        team.totals = { dynamic: dynSum, manual: manSum, overall: dynSum + manSum };
+      });
+
+      // ranking
+      teams.sort((a,b)=> b.totals.overall - a.totals.overall);
+      teams.forEach((t,i)=> t.rank = i+1);
+
+      // build table
+      const timeCols = Object.entries(cfg.timeEvents).map(([key, e])=>{
+        return `<th>${e.label}<br><span class="muted">Pts (time + cones)</span></th>`;
+      }).join('');
+      const manCols = cfg.manualEvents.map(m=> `<th>${m.label}<br><span class="muted">/ ${m.maxPoints}</span></th>`).join('');
+
+      const rows = teams.map(team=>{
+        const tdsTime = Object.entries(cfg.timeEvents).map(([key, eCfg])=>{
+          const run = team.events[key] || {};
+          const tAdj = team.points.dynamic[key].tAdj;
+          const pts = team.points.dynamic[key].pts;
+          const cones = safeCones(run.cones);
+          const pieces = [];
+          if(tAdj===null){
+            pieces.push(`<span class="bad">DNF</span>`);
+          } else {
+            pieces.push(`<span class="pts">${fmtPts(pts)}</span>`);
+            pieces.push(`<span class="muted">(${fmt1(run.time)}s${cones? ` + ${cones}c`:''}${cones? ` = ${fmt1(tAdj)}s`:''})</span>`);
+          }
+          // mark fastest
+          const isFast = tAdj !== null && fastest[key] !== null && Math.abs(tAdj - fastest[key]) < 1e-9;
+          return `<td class="num">${isFast ? '<span class="tag">Fastest</span>&nbsp;' : ''}${pieces.join(' ')}</td>`;
+        }).join('');
+
+        const tdsMan = cfg.manualEvents.map(m=>{
+          const val = team.points.manual[m.key];
+          const lsKey = `${cup}::${team.team}::${m.key}`;
+          return `<td class="num">
+            <input type="number" step="1" min="0" max="${m.maxPoints}" value="${val}" data-lskey="${lsKey}" class="manual-input"/>
+          </td>`;
+        }).join('');
+
+        return `<tr>
+          <td class="rank">${team.rank}</td>
+          <td><div><b>${team.team}</b></div><div class="muted">#${team.number ?? '—'}</div></td>
+          ${tdsTime}
+          ${tdsMan}
+          <td class="num"><span class="pts">${fmtPts(team.totals.dynamic)}</span></td>
+          <td class="num"><span class="pts">${fmtPts(team.totals.manual)}</span></td>
+          <td class="num tot"><span class="pts">${fmtPts(team.totals.overall)}</span></td>
+        </tr>`;
+      }).join('');
+
+      host.innerHTML = `
+        <div class="panel">
+          <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+            <div class="pill"><b>Viewing</b>&nbsp;${CONFIG[cup].label}</div>
+            <div class="hint">Fastest adjusted time sets 100% for each event; others scale with squared ratio.</div>
+          </div>
+          <div style="overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:12px">
+            <table>
+              <thead>
+                <tr>
+                  <th class="rank">#</th>
+                  <th>Team</th>
+                  ${timeCols}
+                  ${manCols}
+                  <th>Dynamic</th>
+                  <th>Static</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
+            ${Object.entries(CONFIG[cup].timeEvents).map(([k,e])=>{
+              const f = fastest[k];
+              return `<span class="pill"><b>${e.label} fastest</b>&nbsp;${f===null?'—':fmt1(f)+'s'}</span>`;
+            }).join('')}
+          </div>
+        </div>
+      `;
+
+      // bind manual inputs
+      host.querySelectorAll('.manual-input').forEach(inp=>{
+        inp.addEventListener('change', ()=>{
+          const max = Number(inp.getAttribute('max'));
+          const val = clampManual(Number(inp.value), max);
+          inp.value = val;
+          const store2 = loadManual();
+          store2[inp.dataset.lskey] = val;
+          saveManual(store2);
+          render(cup); // re-render to update ranks/totals
+        });
+      });
+    }
+
+    // initial render
+    render(currentCup);
+  </script>
 </body>
 </html>
