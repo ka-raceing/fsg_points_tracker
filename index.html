@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>FSG 2025 Scores — EV & DV</title>
+  <title>FSG 2025 Scores — EV & DV — Live MQTT Data</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
       :root {
@@ -17,6 +17,7 @@
         --warning: #fbbf24;     /* Amber for warnings */
         --border: #333333;      /* Border grey */
         --ok: #34d399;          /* Green for good */
+        --live: #00ff88;        /* Live data indicator */
       }
     *{box-sizing:border-box}
     html,body{margin:0;padding:0;background:linear-gradient(180deg,#0b0f17 0%,#0b1120 100%);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji"}
@@ -80,6 +81,44 @@
     .sticky-card{
       position:sticky;top:56px;background:#0f172a;border:1px solid var(--border);border-radius:12px;padding:10px
     }
+    .live-indicator {
+      background: var(--live);
+      color: #000;
+      font-weight: bold;
+      animation: pulse 2s infinite;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-left: 4px;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    .connection-status {
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .connected { background: var(--ok); color: #000; }
+    .disconnected { background: var(--danger); color: #fff; }
+    .real-time-data {
+      border-left: 3px solid var(--live);
+      padding-left: 8px;
+    }
+    .update-flash {
+      animation: flashUpdate 1s ease-out;
+    }
+    @keyframes flashUpdate {
+      0% { background-color: var(--live); }
+      100% { background-color: transparent; }
+    }
+    .data-age {
+      font-size: 10px;
+      color: var(--muted);
+      opacity: 0.7;
+    }
     @media (max-width:860px){
       .hide-sm{display:none}
       input[type="number"]{width:78px}
@@ -93,12 +132,20 @@
         <div class="logo" aria-hidden="true"></div>
         <div>
           <h1>Formula Student 2025 — Scores</h1>
-          <div class="sub">EV & Driverless tabs • Time-based scoring • Manual static scores • Local save</div>
+          <div class="sub">EV & Driverless tabs • Time-based scoring • Manual static scores • Live MQTT Data</div>
         </div>
       </div>
-      <div class="tabs" role="tablist" aria-label="Cup selector">
-        <button class="tab active" role="tab" aria-selected="true" data-cup="EV">EV Cup</button>
-        <button class="tab" role="tab" aria-selected="false" data-cup="DV">DV Cup</button>
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <div id="connection-status" class="connection-status disconnected">Connecting...</div>
+        <div id="last-update" class="hint">No live data yet</div>
+        <input type="file" id="static-scores-file" accept=".txt,.csv" style="display: none;" />
+        <button onclick="document.getElementById('static-scores-file').click()" class="tab" style="padding: 6px 10px; font-size: 12px;">Load EV Static Scores</button>
+        <input type="file" id="dv-static-scores-file" accept=".txt,.csv" style="display: none;" />
+        <button onclick="document.getElementById('dv-static-scores-file').click()" class="tab" style="padding: 6px 10px; font-size: 12px;">Load DV Static Scores</button>
+        <div class="tabs" role="tablist" aria-label="Cup selector">
+          <button class="tab active" role="tab" aria-selected="true" data-cup="EV">EV Cup</button>
+          <button class="tab" role="tab" aria-selected="false" data-cup="DV">DV Cup</button>
+        </div>
       </div>
     </header>
 
@@ -107,6 +154,7 @@
         <div class="legend">
           <span class="pill"><b>Formula</b>&nbsp;Points = Max × (Tfast / Tteam)^2</span>
           <span class="pill"><b>Penalties</b>&nbsp;Skidpad +0.2s, Accel +0.3s, Auto/End/Track +2.0s per cone</span>
+          <span class="pill"><b>Live Data</b>&nbsp;Real-time MQTT updates from FSG timekeeping</span>
           <span class="pill"><b>Manual</b>&nbsp;Static scores are editable; saved locally</span>
         </div>
         <div class="right hint">Tip: Click a tab, edit static points, and refresh — your edits persist.</div>
@@ -123,117 +171,800 @@
     </div>
   </div>
 
+  <!-- MQTT.js library via CDN with fallback -->
+  <script src="https://unpkg.com/mqtt@5.3.0/dist/mqtt.min.js"></script>
+  
   <script>
+    // Wait for MQTT library to load before initializing
+    function waitForMQTT() {
+      return new Promise((resolve) => {
+        if (typeof mqtt !== 'undefined') {
+          resolve();
+        } else {
+          // Check every 100ms for up to 10 seconds
+          let attempts = 0;
+          const checkInterval = setInterval(() => {
+            attempts++;
+            if (typeof mqtt !== 'undefined') {
+              clearInterval(checkInterval);
+              resolve();
+            } else if (attempts > 100) { // 10 seconds timeout
+              clearInterval(checkInterval);
+              console.warn('MQTT library failed to load - continuing without live data');
+              resolve();
+            }
+          }, 100);
+        }
+      });
+    }
+
+    // ======== LIVE DATA INTEGRATION ========
+    class FSGLiveData {
+      constructor() {
+        this.teams = new Map(); // car_id -> team info
+        this.runs = new Map(); // run_id -> run data
+        this.csdData = new Map(); // event -> Map(run_id -> score_data)
+        this.timekeepingResults = new Map(); // event -> results
+        this.isConnected = false;
+        this.client = null;
+        this.onDataUpdate = null; // callback for when data updates
+        this.mqttAvailable = false;
+        this.currentCup = 'EV'; // Default to EV, will be updated
+        
+        // Initialize CSD data maps
+        const events = ['acceleration', 'skidpad', 'autocross', 'endurance', 'dv_acceleration', 'dv_skidpad', 'dv_autocross', 'trackdrive', 'his_skidpad', 'crazy20'];
+        events.forEach(event => this.csdData.set(event, new Map()));
+      }
+
+      setCup(cup) {
+        this.currentCup = cup;
+        console.log(`🏆 Switched to ${cup} cup - will filter teams and events accordingly`);
+        
+        // Re-subscribe to relevant topics if connected
+        if (this.isConnected) {
+          this.subscribe();
+        }
+      }
+
+      async connect() {
+        try {
+          // Check if MQTT library is available
+          if (typeof mqtt === 'undefined') {
+            console.warn('MQTT library not available - running in offline mode');
+            this.mqttAvailable = false;
+            this.updateConnectionStatus();
+            return;
+          }
+
+          this.mqttAvailable = true;
+          
+          // Connect to FSG MQTT broker via WebSockets
+          this.client = mqtt.connect('wss://mqtt.tk.formulastudent.de:443/mqtt', {
+            protocol: 'wss',
+            protocolVersion: 5,
+            reconnectPeriod: 5000,
+            connectTimeout: 30000,
+          });
+
+          this.client.on('connect', () => {
+            console.log('Connected to FSG MQTT broker');
+            this.isConnected = true;
+            this.updateConnectionStatus();
+            this.subscribe();
+          });
+
+          this.client.on('message', (topic, message) => {
+            this.handleMessage(topic, message);
+          });
+
+          this.client.on('disconnect', () => {
+            console.log('Disconnected from MQTT broker');
+            this.isConnected = false;
+            this.updateConnectionStatus();
+          });
+
+          this.client.on('error', (error) => {
+            console.error('MQTT connection error:', error);
+            this.isConnected = false;
+            this.updateConnectionStatus();
+          });
+
+        } catch (error) {
+          console.error('Failed to initialize MQTT connection:', error);
+          this.isConnected = false;
+          this.mqttAvailable = false;
+          this.updateConnectionStatus();
+        }
+      }
+
+      subscribe() {
+        if (!this.client || !this.isConnected || !this.mqttAvailable) return;
+
+        // Define topics based on current cup
+        let topics = ['timekeeping/default/results/full']; // Always subscribe to team data
+        
+        if (this.currentCup === 'EV') {
+          // EV Cup events
+          topics = topics.concat([
+            'csd/acceleration/full',
+            'csd/skidpad/full', 
+            'csd/autocross/full',
+            'csd/endurance/full',
+            'timekeeping/acceleration/results/full',
+            'timekeeping/skidpad/results/full',
+            'timekeeping/autocross/results/full',
+            'timekeeping/endurance/results/full'
+          ]);
+        } else if (this.currentCup === 'DV') {
+          // DV Cup events (driverless)
+          topics = topics.concat([
+            'csd/dv_acceleration/full',
+            'csd/dv_skidpad/full',
+            'csd/dv_autocross/full',
+            'csd/trackdrive/full',
+            'timekeeping/dv_acceleration/results/full',
+            'timekeeping/dv_skidpad/results/full',
+            'timekeeping/dv_autocross/results/full',
+            'timekeeping/trackdrive/results/full'
+          ]);
+        }
+
+        // Unsubscribe from all topics first
+        if (this.client) {
+          this.client.unsubscribe('#');
+        }
+
+        // Subscribe to relevant topics
+        topics.forEach(topic => {
+          this.client.subscribe(topic, (err) => {
+            if (err) {
+              console.error(`Failed to subscribe to ${topic}:`, err);
+            } else {
+              console.log(`Subscribed to ${topic} (${this.currentCup} cup)`);
+            }
+          });
+        });
+      }
+
+      handleMessage(topic, message) {
+        try {
+          const payload = JSON.parse(message.toString());
+          
+          if (topic === 'timekeeping/default/results/full') {
+            this.processTeamData(payload);
+          } else if (topic.startsWith('csd/') && topic.endsWith('/full')) {
+            this.processCSDData(topic, payload);
+          } else if (topic.startsWith('timekeeping/') && topic.includes('/results/full')) {
+            this.processTimekeepingData(topic, payload);
+          }
+
+          // Trigger immediate update callback
+          if (this.onDataUpdate) {
+            // Debounce updates to avoid too frequent re-renders
+            clearTimeout(this.updateTimeout);
+            this.updateTimeout = setTimeout(() => {
+              this.onDataUpdate();
+              this.updateConnectionStatus(); // Update last update time
+            }, 100); // Wait 100ms for potential batch updates
+          }
+
+        } catch (error) {
+          console.error(`Error processing message from ${topic}:`, error);
+        }
+      }
+
+      processTeamData(payload) {
+        let hasNewData = false;
+        
+        if (payload.teams) {
+          payload.teams.forEach(team => {
+            const carId = team.car_id;
+            if (carId) {
+              // Filter teams by FS class based on current cup - be more lenient for now
+              const teamClass = team.fs_class || '';
+              const teamName = team.name || '';
+              
+              // More flexible filtering logic
+              let isRelevantTeam = false;
+              if (this.currentCup === 'EV') {
+                // For EV: include teams without "dv" in name, or with "ev" in class
+                isRelevantTeam = !teamName.toLowerCase().includes('dv') || teamClass.toLowerCase().includes('ev');
+              } else if (this.currentCup === 'DV') {
+                // For DV: include teams with "dv" in name or class
+                isRelevantTeam = teamName.toLowerCase().includes('dv') || teamClass.toLowerCase().includes('dv');
+              } else {
+                isRelevantTeam = true; // Include all for unknown cups
+              }
+              
+              // For debugging - temporarily include all teams
+              isRelevantTeam = true;
+              
+              console.log(`🔍 Team filtering for ${this.currentCup}:`, {
+                carId,
+                teamName,
+                teamClass,
+                isRelevant: isRelevantTeam,
+                currentCup: this.currentCup
+              });
+              
+              if (isRelevantTeam) {
+                const existingTeam = this.teams.get(carId);
+                const newTeam = {
+                  name: team.name || '',
+                  university: team.university || '',
+                  fs_class: team.fs_class || '',
+                  country_code: team.country_code || ''
+                };
+                
+                // Check if team data has changed
+                if (!existingTeam || JSON.stringify(existingTeam) !== JSON.stringify(newTeam)) {
+                  this.teams.set(carId, newTeam);
+                  hasNewData = true;
+                  console.log(`👥 Updated ${this.currentCup} team data for ${newTeam.name} (${carId}) - Class: ${newTeam.fs_class}`);
+                }
+              } else {
+                // Remove teams that don't belong to current cup
+                if (this.teams.has(carId)) {
+                  this.teams.delete(carId);
+                  console.log(`🗑️ Removed team ${team.name} (${carId}) - not in ${this.currentCup} cup (class: ${teamClass})`);
+                  hasNewData = true;
+                }
+              }
+            }
+          });
+        }
+
+        if (payload.runs) {
+          payload.runs.forEach(run => {
+            const runId = run.id;
+            if (runId) {
+              const existingRun = this.runs.get(runId);
+              
+              // Check if run data has changed
+              if (!existingRun || JSON.stringify(existingRun) !== JSON.stringify(run)) {
+                this.runs.set(runId, run);
+                hasNewData = true;
+                
+                // Log timing updates with more details
+                if (run.time && run.car_id) {
+                  const team = this.teams.get(run.car_id);
+                  const teamName = team ? team.name : run.car_id;
+                  console.log(`⏱️ New timing for ${teamName} (${run.car_id}): ${run.time}s (Run ID: ${runId})`);
+                }
+              }
+            }
+          });
+        }
+        
+        if (hasNewData) {
+          console.log('📊 Team/Run data updated');
+        }
+      }
+
+      processCSDData(topic, payload) {
+        const event = topic.split('/')[1]; // Extract event name
+        
+        if (payload.run_id) {
+          const eventMap = this.csdData.get(event) || new Map();
+          const newData = {
+            cones: payload.cones || 0,
+            off_courses: payload.off_courses || 0,
+            judge_score: payload.judge_score || 0,
+            timestamp: Date.now()
+          };
+          
+          // Check if this is actually new data
+          const existingData = eventMap.get(payload.run_id);
+          const hasChanged = !existingData || 
+            existingData.cones !== newData.cones ||
+            existingData.off_courses !== newData.off_courses ||
+            existingData.judge_score !== newData.judge_score;
+          
+          if (hasChanged) {
+            eventMap.set(payload.run_id, newData);
+            this.csdData.set(event, eventMap);
+            console.log(`🏁 New CSD data for ${event}: Run ${payload.run_id} - Cones: ${newData.cones}, Off-courses: ${newData.off_courses}`);
+          }
+        }
+      }
+
+      processTimekeepingData(topic, payload) {
+        const event = topic.replace('timekeeping/', '').replace('/results/full', '');
+        const existingData = this.timekeepingResults.get(event);
+        
+        console.log(`📊 Received timekeeping data for "${event}":`, {
+          topic,
+          event,
+          runsCount: payload.runs ? payload.runs.length : 0,
+          currentCup: this.currentCup,
+          sampleRuns: payload.runs ? payload.runs.slice(0, 2) : []
+        });
+        
+        // Check if timekeeping data has changed
+        if (!existingData || JSON.stringify(existingData) !== JSON.stringify(payload)) {
+          this.timekeepingResults.set(event, payload);
+          console.log(`🏁 Updated timekeeping results for "${event}":`, {
+            total_runs: payload.runs ? payload.runs.length : 0,
+            event: event,
+            teams_with_times: payload.runs ? [...new Set(payload.runs.map(r => r.car_id))].length : 0,
+            sample_car_ids: payload.runs ? payload.runs.slice(0, 3).map(r => r.car_id) : []
+          });
+          
+          // Also populate individual runs into the runs Map for compatibility
+          if (payload.runs) {
+            payload.runs.forEach(run => {
+              if (run.run_id || run.id) {
+                this.runs.set(run.run_id || run.id, {
+                  car_id: run.car_id,
+                  time: run.time || run.best_time || (run.duration ? run.duration / 1000000 : null),
+                  status: run.status,
+                  event: event,
+                  timestamp: run.timestamp || Date.now()
+                });
+              }
+            });
+          }
+        }
+      }
+
+      getTeamByCarId(carId) {
+        // Direct lookup by car ID (most reliable)
+        const teamInfo = this.teams.get(carId);
+        if (teamInfo) {
+          return this.buildTeamLiveData(carId, teamInfo);
+        }
+        return null;
+      }
+
+      getTeamLiveData(teamIdentifier) {
+        // First try to match by car ID if it looks like one
+        if (typeof teamIdentifier === 'string' && /^[A-Z]?\d+$/.test(teamIdentifier.trim())) {
+          const carId = teamIdentifier.trim();
+          const liveData = this.getTeamByCarId(carId);
+          if (liveData) return liveData;
+        }
+        
+        // Then try exact match by name
+        for (const [carId, teamInfo] of this.teams) {
+          if (teamInfo.name && teamInfo.name.toLowerCase() === teamIdentifier.toLowerCase()) {
+            return this.buildTeamLiveData(carId, teamInfo);
+          }
+        }
+        
+        // Finally try partial name matching
+        for (const [carId, teamInfo] of this.teams) {
+          if (teamInfo.name && (
+            teamInfo.name.toLowerCase().includes(teamIdentifier.toLowerCase()) ||
+            teamIdentifier.toLowerCase().includes(teamInfo.name.toLowerCase()) ||
+            this.normalizeTeamName(teamInfo.name) === this.normalizeTeamName(teamIdentifier)
+          )) {
+            return this.buildTeamLiveData(carId, teamInfo);
+          }
+        }
+        
+        return null;
+      }
+
+      normalizeTeamName(name) {
+        // Remove common words and normalize for better matching
+        return name.toLowerCase()
+          .replace(/\b(racing|team|motorsport|formula|student|e\.v\.|electric|ev|dv)\b/g, '')
+          .replace(/[^\w\s]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+      }
+
+      // Map MQTT event names to configuration event names based on current cup
+      mapEventName(mqttEventName) {
+        if (this.currentCup === 'DV') {
+          // DV Cup: Only use DV-specific events
+          const dvEventMap = {
+            'dv_acceleration': 'dv_acceleration',
+            'dv_skidpad': 'dv_skidpad', 
+            'dv_autocross': 'dv_autocross',
+            'trackdrive': 'trackdrive'
+          };
+          return dvEventMap[mqttEventName] || null; // Return null for non-DV events
+        } else {
+          // EV Cup: Include both regular and DV events
+          const evEventMap = {
+            // Regular EV events
+            'acceleration': 'acceleration',
+            'skidpad': 'skidpad',
+            'autocross': 'autocross',
+            'endurance': 'endurance',
+            // DV events also available in EV cup
+            'dv_acceleration': 'dv_acceleration',
+            'dv_skidpad': 'dv_skidpad',
+            'dv_autocross': 'dv_autocross',
+            'trackdrive': 'trackdrive'
+          };
+          return evEventMap[mqttEventName] || mqttEventName;
+        }
+      }
+
+      buildTeamLiveData(carId, teamInfo) {
+        const liveData = { ...teamInfo, events: {} };
+        
+        // Add timing data from timekeeping results
+        for (const [mqttEvent, timekeepingData] of this.timekeepingResults) {
+          const eventKey = this.mapEventName(mqttEvent);
+          
+          // Skip events that don't belong to current cup
+          if (!eventKey) continue;
+          
+          if (!liveData.events[eventKey]) {
+            liveData.events[eventKey] = [];
+          }
+          
+          if (timekeepingData && timekeepingData.runs) {
+            // Find runs for this car ID
+            const teamRuns = timekeepingData.runs.filter(run => 
+              run.car_id === carId || run.car_id === parseInt(carId)
+            );
+            
+            teamRuns.forEach(run => {
+              // Get corresponding CSD data if available
+              const eventCSDData = this.csdData.get(mqttEvent); // Use original MQTT event name for CSD lookup
+              const csdInfo = eventCSDData ? eventCSDData.get(run.run_id || run.id) : null;
+              
+              // Extract time from duration field (microseconds to seconds)
+              let runTime = null;
+              if (run.duration && typeof run.duration === 'number') {
+                runTime = run.duration / 1000000; // Convert microseconds to seconds
+              } else if (run.time || run.best_time || run.final_time) {
+                runTime = run.time || run.best_time || run.final_time;
+                if (typeof runTime === 'string') {
+                  runTime = parseFloat(runTime);
+                }
+              }
+              
+              if (isNaN(runTime) || runTime <= 0) {
+                runTime = null;
+              }
+              
+              // Determine if this run is valid for scoring
+              const isValidRun = run.status === 'finished' && run.result === 'regular' && runTime !== null;
+              
+              console.log(`🔍 Processing run for car ${carId} in ${mqttEvent}->${eventKey}:`, {
+                run_id: run.run_id || run.id,
+                duration_microseconds: run.duration,
+                parsed_time_seconds: runTime,
+                status: run.status,
+                result: run.result,
+                is_valid: isValidRun,
+                cones: csdInfo ? csdInfo.cones : 0,
+                cup_filter: this.currentCup
+              });
+              
+              if (isValidRun) {
+                liveData.events[eventKey].push({
+                  run_id: run.run_id || run.id,
+                  time: runTime,
+                  status: run.status,
+                  result: run.result,
+                  position: run.position,
+                  cones: csdInfo ? csdInfo.cones : 0,
+                  off_courses: csdInfo ? csdInfo.off_courses : 0,
+                  judge_score: csdInfo ? csdInfo.judge_score : 0,
+                  timestamp: run.timestamp || Date.now(),
+                  team_best: run.team_best,
+                  overall_best: run.overall_best
+                });
+              }
+            });
+          }
+        }
+        
+        // Also add any standalone CSD data (for events without timekeeping)
+        for (const [mqttEvent, eventData] of this.csdData) {
+          const eventKey = this.mapEventName(mqttEvent);
+          
+          if (!liveData.events[eventKey]) {
+            liveData.events[eventKey] = [];
+          }
+          
+          for (const [runId, scoreData] of eventData) {
+            const runInfo = this.runs.get(runId);
+            if (runInfo && runInfo.car_id === carId) {
+              // Check if we already have this run from timekeeping data
+              const existingRun = liveData.events[eventKey].find(r => r.run_id === runId);
+              if (!existingRun) {
+                liveData.events[eventKey].push({
+                  run_id: runId,
+                  time: runInfo.time,
+                  status: runInfo.status,
+                  ...scoreData
+                });
+              }
+            }
+          }
+        }
+        
+        return liveData;
+      }
+
+      getAllLiveTeams() {
+        // Return all teams from MQTT data, not just matched ones
+        const allTeams = [];
+        
+        for (const [carId, teamInfo] of this.teams) {
+          const liveData = this.buildTeamLiveData(carId, teamInfo);
+          if (liveData) {
+            allTeams.push({
+              carId,
+              ...liveData
+            });
+          }
+        }
+        
+        return allTeams;
+      }
+
+      updateConnectionStatus() {
+        const statusEl = document.getElementById('connection-status');
+        const updateEl = document.getElementById('last-update');
+        
+        if (!this.mqttAvailable) {
+          statusEl.className = 'connection-status disconnected';
+          statusEl.textContent = 'No MQTT';
+          updateEl.textContent = 'MQTT library not available';
+        } else if (this.isConnected) {
+          statusEl.className = 'connection-status connected';
+          statusEl.textContent = 'LIVE';
+          updateEl.textContent = `Last update: ${new Date().toLocaleTimeString()}`;
+        } else {
+          statusEl.className = 'connection-status disconnected';
+          statusEl.textContent = 'Offline';
+          updateEl.textContent = 'Attempting to connect...';
+        }
+      }
+    }
+
+    // Initialize live data system
+    const liveData = new FSGLiveData();
+
+    // ======== STATIC SCORES MANAGEMENT ========
+    class StaticScoresManager {
+      constructor() {
+        this.staticScores = new Map(); // carId -> {design, cost, business, efficiency}
+        this.dvStaticScores = new Map(); // carId -> {ede}
+        this.loadFromLocalStorage();
+      }
+
+      loadFromLocalStorage() {
+        try {
+          // Load EV static scores
+          const stored = localStorage.getItem('fsg2025_static_scores');
+          if (stored) {
+            const data = JSON.parse(stored);
+            this.staticScores = new Map(Object.entries(data));
+            console.log(`📊 Loaded ${this.staticScores.size} EV static score entries from localStorage`);
+          }
+          
+          // Load DV static scores
+          const dvStored = localStorage.getItem('fsg2025_dv_static_scores');
+          if (dvStored) {
+            const dvData = JSON.parse(dvStored);
+            this.dvStaticScores = new Map(Object.entries(dvData));
+            console.log(`📊 Loaded ${this.dvStaticScores.size} DV static score entries from localStorage`);
+          }
+        } catch (e) {
+          console.error('Error loading static scores:', e);
+        }
+      }
+
+      saveToLocalStorage() {
+        try {
+          // Save EV scores
+          const data = Object.fromEntries(this.staticScores);
+          localStorage.setItem('fsg2025_static_scores', JSON.stringify(data));
+          
+          // Save DV scores
+          const dvData = Object.fromEntries(this.dvStaticScores);
+          localStorage.setItem('fsg2025_dv_static_scores', JSON.stringify(dvData));
+          
+          console.log(`💾 Saved static scores: ${this.staticScores.size} EV entries, ${this.dvStaticScores.size} DV entries`);
+        } catch (e) {
+          console.error('Error saving static scores:', e);
+        }
+      }
+
+      parseStaticScoresFile(fileContent, isDV = false) {
+        const lines = fileContent.split('\n').map(line => line.trim()).filter(line => line);
+        let parsedCount = 0;
+        
+        console.log(`📋 Parsing ${isDV ? 'DV' : 'EV'} static scores, ${lines.length} lines`);
+        
+        for (const line of lines) {
+          // Skip header lines or comments
+          if (line.startsWith('#') || line.toLowerCase().includes('car') && line.toLowerCase().includes('design')) {
+            continue;
+          }
+          
+          // Parse based on format type
+          const parts = line.split(/[,;\t\s]+/).map(p => p.trim()).filter(p => p);
+          
+          if (isDV) {
+            // DV format: CarNumber, EDE
+            if (parts.length >= 2) {
+              const carId = parts[0];
+              const ede = parseFloat(parts[1]) || 0;
+              
+              if (carId && !isNaN(ede)) {
+                this.dvStaticScores.set(carId, { ede });
+                parsedCount++;
+                console.log(`🔌 DV Car ${carId}: EDE=${ede}`);
+              }
+            }
+          } else {
+            // EV format: CarNumber, Design, Cost, Business, [Efficiency]
+            if (parts.length >= 4) {
+              const carId = parts[0];
+              const design = parseFloat(parts[1]) || 0;
+              const cost = parseFloat(parts[2]) || 0;
+              const business = parseFloat(parts[3]) || 0;
+              const efficiency = parts.length > 4 ? (parseFloat(parts[4]) || 0) : 0;
+              
+              this.staticScores.set(carId, {
+                design: design,
+                cost: cost,
+                business: business,
+                efficiency: efficiency
+              });
+              
+              parsedCount++;
+              console.log(`🏆 EV Car ${carId}: Design=${design}, Cost=${cost}, Business=${business}, Efficiency=${efficiency}`);
+            }
+          }
+        }
+        
+        this.saveToLocalStorage();
+        console.log(`✅ Successfully parsed ${parsedCount} ${isDV ? 'DV' : 'EV'} static score entries`);
+        return parsedCount;
+      }
+
+      getStaticScores(carId, isDV = false) {
+        if (isDV) {
+          return this.dvStaticScores.get(carId) || { ede: 0 };
+        } else {
+          return this.staticScores.get(carId) || {
+            design: 0,
+            cost: 0,
+            business: 0,
+            efficiency: 0
+          };
+        }
+      }
+
+      setStaticScore(carId, category, value, isDV = false) {
+        if (isDV) {
+          if (!this.dvStaticScores.has(carId)) {
+            this.dvStaticScores.set(carId, { ede: 0 });
+          }
+          this.dvStaticScores.get(carId)[category] = value;
+        } else {
+          if (!this.staticScores.has(carId)) {
+            this.staticScores.set(carId, { design: 0, cost: 0, business: 0, efficiency: 0 });
+          }
+          this.staticScores.get(carId)[category] = value;
+        }
+        this.saveToLocalStorage();
+      }
+    }
+
+    const staticScoresManager = new StaticScoresManager();
+
     // ======== CONFIGURE EVENTS, POINTS, PENALTIES ========
-    // You can safely change labels, maxPoints, and penalties here.
+    // FSG 2025 Rules - Official scoring according to FS-Rules 2025 Section D
     const CONFIG = {
       EV: {
         label: "EV Cup",
         timeEvents: {
-          acceleration: { label: "Acceleration", maxPoints: 75, conePenaltySec: 0.3 },
-          skidpad:     { label: "Skidpad",     maxPoints: 75, conePenaltySec: 0.2 },
+          acceleration: { label: "Acceleration", maxPoints: 75, conePenaltySec: 0.5 },
+          skidpad:     { label: "Skidpad",     maxPoints: 75, conePenaltySec: 0.5 },
           autocross:   { label: "Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
-          endurance:   { label: "Endurance",   maxPoints: 275, conePenaltySec: 2.0 },
+          endurance:   { label: "Endurance",   maxPoints: 300, conePenaltySec: 2.0 },
+          // Driverless categories in EV
+          dv_acceleration: { label: "DV Acceleration", maxPoints: 75, conePenaltySec: 0.5 },
+          dv_skidpad:     { label: "DV Skidpad",     maxPoints: 75, conePenaltySec: 0.5 },
+          dv_autocross:   { label: "DV Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
+          trackdrive:     { label: "Trackdrive",     maxPoints: 300, conePenaltySec: 2.0 },
         },
         manualEvents: [
           { key: "design",     label: "Design",     maxPoints: 150 },
           { key: "cost",       label: "Cost",       maxPoints: 100 },
           { key: "business",   label: "Business",   maxPoints: 75  },
-          { key: "efficiency", label: "Efficiency", maxPoints: 100 }, // set manual by default
+          { key: "efficiency", label: "Efficiency", maxPoints: 100 },
         ]
       },
       DV: {
-        label: "Driverless Cup",
+        label: "Driverless Cup", 
         timeEvents: {
-          acceleration: { label: "Acceleration", maxPoints: 75, conePenaltySec: 0.3 },
-          skidpad:     { label: "Skidpad",     maxPoints: 75, conePenaltySec: 0.2 },
-          autocross:   { label: "Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
-          trackdrive:  { label: "Trackdrive",  maxPoints: 250, conePenaltySec: 2.0 },
+          dv_acceleration: { label: "DV Acceleration", maxPoints: 75, conePenaltySec: 0.5 },
+          dv_skidpad:     { label: "DV Skidpad",     maxPoints: 75, conePenaltySec: 0.5 },
+          dv_autocross:   { label: "DV Autocross",   maxPoints: 100, conePenaltySec: 2.0 },
+          trackdrive:     { label: "Trackdrive",     maxPoints: 300, conePenaltySec: 2.0 },
         },
         manualEvents: [
-          { key: "design",   label: "Design",   maxPoints: 150 },
-          { key: "cost",     label: "Cost",     maxPoints: 100 },
-          { key: "business", label: "Business", maxPoints: 75  },
+          { key: "ede", label: "EDE (Engineering Design Event)", maxPoints: 425 },
         ]
       },
-      // Scoring model: points = maxPoints * (tFast / tTeam) ^ exponent
-      exponent: 2
+      // FSG 2025 Scoring formula: Points = MaxPoints * (T_min / T_team)^1
+      // Changed from exponential to linear scoring for 2025
+      exponent: 1
     };
 
     // ======== SAMPLE DATA (edit to your 2025 results) ========
-    // Use null for missing/DNF time. 'cones' is optional; defaults to 0.
+    // Only team information and manual scores - timing data comes from live MQTT feed
     const DATA = {
       EV: [
         {
           team: "TUfast Racing Team EV",
           number: 1,
-          events: {
-            acceleration: { time: 3.61, cones: 0 },
-            skidpad:     { time: 4.85, cones: 0 },
-            autocross:   { time: 61.42, cones: 1 },
-            endurance:   { time: 1324.8, cones: 2 },
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 135, cost: 89, business: 62, efficiency: 78 }
         },
         {
           team: "AMZ Racing",
           number: 2,
-          events: {
-            acceleration: { time: 3.54, cones: 1 },
-            skidpad:     { time: 4.78, cones: 0 },
-            autocross:   { time: 60.90, cones: 0 },
-            endurance:   { time: 1308.1, cones: 1 },
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 142, cost: 92, business: 70, efficiency: 83 }
         },
         {
           team: "Greenteam Stuttgart",
           number: 3,
-          events: {
-            acceleration: { time: 3.70, cones: 0 },
-            skidpad:     { time: 4.92, cones: 1 },
-            autocross:   { time: 62.20, cones: 0 },
-            endurance:   { time: null, cones: 0 }, // DNF
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 138, cost: 87, business: 65, efficiency: 0 }
+        },
+        {
+          team: "Ka-RaceIng",
+          number: 4,
+          events: {}, // No mock timing data - will be populated from live feed
+          manual: { design: 140, cost: 85, business: 68, efficiency: 75 }
+        },
+        {
+          team: "municHMotorsport",
+          number: 5,
+          events: {}, // No mock timing data - will be populated from live feed
+          manual: { design: 130, cost: 90, business: 60, efficiency: 70 }
         }
       ],
       DV: [
         {
           team: "KA-RaceIng DV",
           number: 201,
-          events: {
-            acceleration: { time: 5.25, cones: 0 },
-            skidpad:     { time: 6.10, cones: 0 },
-            autocross:   { time: 75.80, cones: 0 },
-            trackdrive:  { time: 920.4, cones: 3 },
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 140, cost: 90, business: 64 }
         },
         {
           team: "TUM Autonomous Motorsport",
           number: 202,
-          events: {
-            acceleration: { time: 5.10, cones: 1 },
-            skidpad:     { time: 5.98, cones: 0 },
-            autocross:   { time: 74.20, cones: 1 },
-            trackdrive:  { time: 905.9, cones: 2 },
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 145, cost: 95, business: 70 }
         },
         {
           team: "UPC ecoRacing DV",
           number: 203,
-          events: {
-            acceleration: { time: null, cones: 0 }, // DNF
-            skidpad:     { time: 6.30, cones: 0 },
-            autocross:   { time: 78.10, cones: 2 },
-            trackdrive:  { time: 955.7, cones: 0 },
-          },
+          events: {}, // No mock timing data - will be populated from live feed
           manual: { design: 130, cost: 82, business: 60 }
+        },
+        {
+          team: "Dart Racing",
+          number: 204,
+          events: {}, // No mock timing data - will be populated from live feed
+          manual: { design: 135, cost: 88, business: 65 }
+        },
+        {
+          team: "Raceyard",
+          number: 205,
+          events: {}, // No mock timing data - will be populated from live feed
+          manual: { design: 142, cost: 91, business: 72 }
         }
       ]
     };
+
+    // Teams now populated entirely from MQTT data and static score files
 
     // ======== UTILITIES ========
     const fmt1 = (x) => x === null || x === undefined ? "—" : x.toFixed(2);
@@ -242,8 +973,27 @@
 
     function adjustedTime(eventKey, run, cup){
       if(!run || run.time === null || run.time === undefined) return null;
+      
+      // FSG 2025 penalty structure
       const cone = CONFIG[cup].timeEvents[eventKey]?.conePenaltySec ?? 0;
-      return run.time + safeCones(run.cones)*cone;
+      const offCoursePenalty = 10; // FSG 2025: 10 seconds per off-course
+      
+      // Handle DNF and other status penalties
+      if (run.status === 'dnf' || run.status === 'disqualified') {
+        return null; // DNF gets no points
+      }
+      
+      // Calculate adjusted time with penalties
+      let adjustedTime = run.time;
+      adjustedTime += safeCones(run.cones) * cone; // Cone penalties
+      adjustedTime += safeCones(run.off_courses) * offCoursePenalty; // Off-course penalties
+      
+      // FSG 2025: Additional penalties for status
+      if (run.status === 'mechanical_failure') {
+        adjustedTime *= 1.2; // 20% time penalty for mechanical failure
+      }
+      
+      return adjustedTime;
     }
 
     function fastestTimes(cup, teams){
@@ -296,8 +1046,165 @@
     });
 
     function render(cup){
+      // Update live data to filter for this cup
+      liveData.setCup(cup);
+      
       const cfg = CONFIG[cup];
-      const teams = DATA[cup].map(x=>JSON.parse(JSON.stringify(x))); // shallow clone
+      let teams = []; // Start with empty teams array
+      
+      // Create teams entirely from MQTT data
+      const allLiveTeams = liveData.getAllLiveTeams();
+      for (const liveTeam of allLiveTeams) {
+        // Teams are already filtered by cup in processTeamData, so include all of them
+        // Get static scores for this car ID (cup-specific)
+        const isDV = (cup === 'DV');
+        const staticScores = staticScoresManager.getStaticScores(liveTeam.carId, isDV);
+        
+        teams.push({
+          team: liveTeam.name,
+          carId: liveTeam.carId,
+          number: liveTeam.carId,
+          university: liveTeam.university || 'Unknown University',
+          country: liveTeam.country_code || '',
+          events: {},
+          manual: staticScores, // Use loaded static scores
+          isFromMQTT: true,
+          liveData: liveTeam
+        });
+      }
+      
+      // Debug: Show what teams we have
+      console.log(`🏆 ${cup} Cup - MQTT Teams found:`, {
+        totalTeams: teams.length,
+        teamCarIds: teams.map(t => t.carId),
+        teamNames: teams.map(t => t.team)
+      });
+      
+      // If no MQTT teams, fall back to static data (temporarily disabled for debugging)
+      if (teams.length === 0) {
+        console.log(`⚠️ No MQTT teams found for ${cup} cup, using fallback data`);
+        teams = DATA[cup].map(x=>JSON.parse(JSON.stringify(x)));
+      }
+      
+      // Integrate live timing data for each team
+      teams.forEach(team => {
+        const carId = team.carId || team.number?.toString();
+        const teamLiveData = liveData.getTeamByCarId(carId);
+        
+        if (teamLiveData) {
+          team.liveData = teamLiveData;
+          team.lastUpdate = Date.now();
+          
+          // Update team info with live data
+          if (teamLiveData.name && teamLiveData.name !== team.team) {
+            console.log(`🔄 Updating team name: "${team.team}" → "${teamLiveData.name}"`);
+            team.team = teamLiveData.name;
+          }
+          if (teamLiveData.university) team.university = teamLiveData.university;
+          if (teamLiveData.country_code) team.country = teamLiveData.country_code;
+          
+          // Populate timing events entirely from live data
+          Object.keys(cfg.timeEvents).forEach(eventKey => {
+            const liveEvents = teamLiveData.events[eventKey];
+            console.log(`🔍 Checking live data for team ${team.team} (${carId}) - Event: ${eventKey}`, {
+              hasLiveEvents: !!liveEvents,
+              eventsLength: liveEvents ? liveEvents.length : 0,
+              availableEvents: Object.keys(teamLiveData.events),
+              liveEventsData: liveEvents ? liveEvents.slice(0, 2) : null // First 2 runs for debugging
+            });
+            
+            if (liveEvents && liveEvents.length > 0) {
+              // Filter only valid finished runs and calculate adjusted times
+              const validRuns = liveEvents
+                .filter(run => {
+                  const isValid = run.time !== null && run.status === 'finished';
+                  console.log(`🏃 Run validation for ${eventKey}:`, {
+                    runId: run.run_id,
+                    time: run.time,
+                    status: run.status,
+                    isValid
+                  });
+                  return isValid;
+                })
+                .map(run => {
+                  // Calculate adjusted time with penalties
+                  const conePenalty = cfg.timeEvents[eventKey]?.conePenaltySec || 0;
+                  const adjustedTime = run.time + (run.cones * conePenalty) + (run.off_courses * 10); // Assuming 10s penalty for off-course
+                  return {
+                    ...run,
+                    adjustedTime: adjustedTime
+                  };
+                })
+                .sort((a, b) => a.adjustedTime - b.adjustedTime); // Sort by best adjusted time
+              
+              console.log(`📊 Valid runs for ${team.team} ${eventKey}:`, {
+                totalRuns: liveEvents.length,
+                validRuns: validRuns.length,
+                bestTime: validRuns.length > 0 ? validRuns[0].adjustedTime : null
+              });
+              
+              if (validRuns.length > 0) {
+                // Take the best run (lowest adjusted time)
+                const bestRun = validRuns[0];
+                
+                // Initialize events object if it doesn't exist
+                if (!team.events) {
+                  team.events = {};
+                }
+                
+                // Use the best run for scoring
+                team.events[eventKey] = {
+                  time: bestRun.time,
+                  cones: bestRun.cones || 0,
+                  off_courses: bestRun.off_courses || 0,
+                  status: bestRun.status,
+                  result: bestRun.result,
+                  isLive: true,
+                  lastUpdate: bestRun.timestamp || Date.now(),
+                  runId: bestRun.run_id,
+                  adjustedTime: bestRun.adjustedTime,
+                  allRuns: validRuns.length // For debugging
+                };
+                
+                console.log(`⏱️ Best run for ${team.team} (${carId}) - ${eventKey}:`, {
+                  rawTime: bestRun.time,
+                  adjustedTime: bestRun.adjustedTime,
+                  cones: bestRun.cones,
+                  offCourses: bestRun.off_courses,
+                  totalRuns: validRuns.length,
+                  runId: bestRun.run_id
+                });
+              } else {
+                console.log(`❌ No valid runs found for ${team.team} (${carId}) - ${eventKey}`);
+              }
+            } else {
+              console.log(`❌ No live timing data found for ${team.team} (${carId}) - ${eventKey}`);
+            }
+          });
+        } else {
+          // No live data available - ensure events object exists but is empty
+          if (!team.events) {
+            team.events = {};
+          }
+          // Initialize all events as null/empty for teams without live data
+          Object.keys(cfg.timeEvents).forEach(eventKey => {
+            if (!team.events[eventKey]) {
+              team.events[eventKey] = {
+                time: null,
+                cones: 0,
+                off_courses: 0,
+                isLive: false
+              };
+            }
+          });
+        }
+        
+        // Ensure manual scores exist and are using static scores manager
+        if (!team.manual) {
+          team.manual = staticScoresManager.getStaticScores(carId);
+        }
+      });
+      
       const fastest = fastestTimes(cup, teams);
       const store = loadManual();
 
@@ -313,10 +1220,34 @@
         }
         let manSum = 0;
         cfg.manualEvents.forEach(m=>{
-          const lsKey = `${cup}::${team.team}::${m.key}`;
-          const lsVal = store[lsKey];
-          const initial = (team.manual && Number.isFinite(team.manual[m.key])) ? team.manual[m.key] : 0;
-          const val = clampManual(Number(lsVal ?? initial), m.maxPoints);
+          const carId = team.carId || team.number?.toString();
+          let val = 0;
+          
+          // Special handling for FSG 2025 efficiency scoring
+          if (m.key === 'efficiency' && cup === 'EV') {
+            // FSG 2025: Efficiency points calculated from endurance performance
+            const enduranceEvent = team.events['endurance'];
+            if (enduranceEvent && enduranceEvent.time && enduranceEvent.time > 0) {
+              // Example FSG 2025 efficiency formula: based on endurance time and consumption
+              // This would need actual energy consumption data from MQTT
+              // For now, use a placeholder calculation
+              const endurancePoints = team.points.dynamic['endurance']?.pts || 0;
+              val = Math.min(m.maxPoints, endurancePoints * 0.33); // Efficiency correlates with endurance
+            } else {
+              // Fall back to manual/static score
+              const staticScore = staticScoresManager.getStaticScores(carId)[m.key] || 0;
+              const lsKey = `${cup}::${carId}::${m.key}`;
+              const lsVal = store[lsKey];
+              val = clampManual(Number(lsVal ?? staticScore), m.maxPoints);
+            }
+          } else {
+            // Normal manual event scoring
+            const staticScore = staticScoresManager.getStaticScores(carId)[m.key] || 0;
+            const lsKey = `${cup}::${carId}::${m.key}`;
+            const lsVal = store[lsKey];
+            val = clampManual(Number(lsVal ?? staticScore), m.maxPoints);
+          }
+          
           team.points.manual[m.key] = val;
           manSum += val;
         });
@@ -339,29 +1270,56 @@
           const tAdj = team.points.dynamic[key].tAdj;
           const pts = team.points.dynamic[key].pts;
           const cones = safeCones(run.cones);
+          const offCourses = safeCones(run.off_courses);
+          const isLive = run.isLive;
           const pieces = [];
+          
           if(tAdj===null){
-            pieces.push(`<span class="bad">DNF</span>`);
+            pieces.push(`<span class="bad">No Time</span>`);
           } else {
             pieces.push(`<span class="pts">${fmtPts(pts)}</span>`);
-            pieces.push(`<span class="muted">(${fmt1(run.time)}s${cones? ` + ${cones}c`:''}${cones? ` = ${fmt1(tAdj)}s`:''})</span>`);
+            let timeStr = `(${fmt1(run.time)}s`;
+            if (cones > 0 || offCourses > 0) {
+              const penalties = [];
+              if (cones > 0) penalties.push(`${cones}c`);
+              if (offCourses > 0) penalties.push(`${offCourses}oc`);
+              timeStr += ` + ${penalties.join('+')} = ${fmt1(tAdj)}s`;
+            }
+            timeStr += ')';
+            pieces.push(`<span class="muted">${timeStr}</span>`);
+            
+            if (isLive) {
+              pieces.push('<span class="live-indicator">LIVE</span>');
+            }
           }
+          
           // mark fastest
           const isFast = tAdj !== null && fastest[key] !== null && Math.abs(tAdj - fastest[key]) < 1e-9;
-          return `<td class="num">${isFast ? '<span class="tag">Fastest</span>&nbsp;' : ''}${pieces.join(' ')}</td>`;
+          const cellClass = isLive ? 'num real-time-data' : 'num';
+          return `<td class="${cellClass}">${isFast ? '<span class="tag">Fastest</span>&nbsp;' : ''}${pieces.join(' ')}</td>`;
         }).join('');
 
         const tdsMan = cfg.manualEvents.map(m=>{
           const val = team.points.manual[m.key];
-          const lsKey = `${cup}::${team.team}::${m.key}`;
+          const carId = team.carId || team.number?.toString();
+          const lsKey = `${cup}::${carId}::${m.key}`;
           return `<td class="num">
-            <input type="number" step="1" min="0" max="${m.maxPoints}" value="${val}" data-lskey="${lsKey}" class="manual-input"/>
+            <input type="number" step="1" min="0" max="${m.maxPoints}" value="${val}" data-lskey="${lsKey}" data-carid="${carId}" data-category="${m.key}" class="manual-input"/>
           </td>`;
         }).join('');
 
-        return `<tr>
+        const hasLiveData = team.liveData !== undefined;
+        const teamName = team.liveData?.name || team.team;
+        const university = team.liveData?.university || team.university || 'Unknown University';
+        const country = team.liveData?.country_code || team.country || '';
+        const carNumber = team.liveData?.carId || team.number || '—';
+
+        return `<tr${hasLiveData ? ' class="real-time-data"' : ''}>
           <td class="rank">${team.rank}</td>
-          <td><div><b>${team.team}</b></div><div class="muted">#${team.number ?? '—'}</div></td>
+          <td>
+            <div><b>${teamName}</b>${hasLiveData ? '<span class="live-indicator">LIVE</span>' : ''}${team.isFromMQTT ? '<span class="live-indicator" style="background: var(--warning); color: #000;">MQTT</span>' : ''}</div>
+            <div class="muted">#${carNumber} • ${university} ${country ? `(${country})` : ''}</div>
+          </td>
           ${tdsTime}
           ${tdsMan}
           <td class="num"><span class="pts">${fmtPts(team.totals.dynamic)}</span></td>
@@ -370,11 +1328,18 @@
         </tr>`;
       }).join('');
 
+      const liveTeamCount = teams.filter(t => t.liveData).length;
+      const mqttTeamCount = teams.filter(t => t.isFromMQTT).length;
+      const totalDataPoints = liveData.teams.size + liveData.runs.size + Array.from(liveData.csdData.values()).reduce((sum, map) => sum + map.size, 0);
+
       host.innerHTML = `
         <div class="panel">
           <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
             <div class="pill"><b>Viewing</b>&nbsp;${CONFIG[cup].label}</div>
-            <div class="hint">Fastest adjusted time sets 100% for each event; others scale with squared ratio.</div>
+            <div class="row" style="gap: 8px;">
+              ${liveData.isConnected ? `<div class="pill live-indicator">${liveTeamCount} Live • ${mqttTeamCount} MQTT • ${totalDataPoints} Data Points</div>` : ''}
+              <div class="hint">Live updates every few seconds • Fastest time sets 100% baseline</div>
+            </div>
           </div>
           <div style="overflow:auto;max-height:70vh;border:1px solid var(--border);border-radius:12px">
             <table>
@@ -395,7 +1360,7 @@
           <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap">
             ${Object.entries(CONFIG[cup].timeEvents).map(([k,e])=>{
               const f = fastest[k];
-              return `<span class="pill"><b>${e.label} fastest</b>&nbsp;${f===null?'—':fmt1(f)+'s'}</span>`;
+              return `<span class="pill"><b>${e.label} fastest</b>&nbsp;${f===null?'No times yet':fmt1(f)+'s'}</span>`;
             }).join('')}
           </div>
         </div>
@@ -407,9 +1372,19 @@
           const max = Number(inp.getAttribute('max'));
           const val = clampManual(Number(inp.value), max);
           inp.value = val;
+          
+          // Save to localStorage for persistence
           const store2 = loadManual();
           store2[inp.dataset.lskey] = val;
           saveManual(store2);
+          
+          // Save to static scores manager
+          const carId = inp.dataset.carid;
+          const category = inp.dataset.category;
+          if (carId && category) {
+            staticScoresManager.setStaticScore(carId, category, val);
+          }
+          
           render(cup); // re-render to update ranks/totals
         });
       });
@@ -417,6 +1392,84 @@
 
     // initial render
     render(currentCup);
+
+    // Initialize live data connection after MQTT library loads
+    async function initializeLiveData() {
+      await waitForMQTT();
+      
+      // Initialize live data connection
+      liveData.onDataUpdate = () => {
+        // Re-render when live data updates
+        render(currentCup);
+      };
+
+      // Connect to MQTT broker
+      await liveData.connect();
+
+      // Periodic connection retry if disconnected
+      setInterval(() => {
+        if (!liveData.isConnected && liveData.client && liveData.mqttAvailable) {
+          console.log('Attempting to reconnect to MQTT broker...');
+          liveData.connect();
+        }
+      }, 30000); // Try every 30 seconds
+    }
+
+    // Start initialization
+    initializeLiveData();
+
+    // ======== FILE LOADING FOR STATIC SCORES ========
+    document.getElementById('static-scores-file').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const content = e.target.result;
+          const parsedCount = staticScoresManager.parseStaticScoresFile(content, false); // EV format
+          
+          alert(`✅ Successfully loaded ${parsedCount} EV static score entries from ${file.name}\n\nFile format expected:\nCarNumber, Design, Cost, Business, [Efficiency]\n\nExample:\n76, 142, 85, 68, 75\nT1, 140, 90, 70, 80`);
+          
+          // Re-render to show updated scores
+          render(currentCup);
+          
+        } catch (error) {
+          console.error('Error loading EV static scores file:', error);
+          alert(`❌ Error loading file: ${error.message}\n\nPlease check the file format:\nCarNumber, Design, Cost, Business, [Efficiency]`);
+        }
+      };
+      
+      reader.readAsText(file);
+      // Reset file input
+      event.target.value = '';
+    });
+
+    document.getElementById('dv-static-scores-file').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const content = e.target.result;
+          const parsedCount = staticScoresManager.parseStaticScoresFile(content, true); // DV format
+          
+          alert(`✅ Successfully loaded ${parsedCount} DV static score entries from ${file.name}\n\nFile format expected:\nCarNumber, EDE\n\nExample:\n42, 85\nT2, 92`);
+          
+          // Re-render to show updated scores
+          render(currentCup);
+          
+        } catch (error) {
+          console.error('Error loading DV static scores file:', error);
+          alert(`❌ Error loading file: ${error.message}\n\nPlease check the file format:\nCarNumber, EDE`);
+        }
+      };
+      
+      reader.readAsText(file);
+      // Reset file input
+      event.target.value = '';
+    });
   </script>
 </body>
 </html>
