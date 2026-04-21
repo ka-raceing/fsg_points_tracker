@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FSG EV Scoreboard</title>
+  <link rel="stylesheet" href="scoreboard.css" />
+</head>
+<body data-cup="EV">
+  <div class="app">
+    <section class="card">
+      <div class="header">
+        <div>
+          <h1>FSG EV Scoreboard</h1>
+          <div class="subtitle">Live MQTT timing with adjusted-time scoring (time + C + OC).</div>
+        </div>
+        <div class="toolbar">
+          <a class="nav-link" href="index.html">Home</a>
+          <a class="nav-link" href="dv.html">DV page</a>
+          <span id="connectionBadge" class="badge status-bad">Offline</span>
+          <span id="updateBadge" class="badge">No message yet</span>
+          <button id="reconnectBtn">Reconnect MQTT</button>
+          <button id="clearDebugBtn" class="secondary">Clear Debug</button>
+        </div>
+      </div>
+      <div class="toolbar" style="margin-top: 10px;">
+        <label class="file-label">
+          EV static file
+          <input id="staticFile" type="file" accept=".txt,.csv" />
+        </label>
+        <label class="file-label">
+          EV penalties file
+          <input id="penaltiesFile" type="file" accept=".txt,.csv" />
+        </label>
+      </div>
+      <div class="help" style="margin-top: 10px;">
+        EV static format: <strong>car_id,engineering_design,cost_manufacturing,business_plan,efficiency</strong><br>
+        EV penalties format: <strong>car_id,penalty_points</strong>
+      </div>
+    </section>
+
+    <section>
+      <article id="board" class="card"></article>
+    </section>
+
+    <section class="card debug">
+      <div class="scoreboard-title">
+        <h2>Debug Console</h2>
+        <div class="chips">
+          <span id="msgCountChip" class="chip">Messages: 0</span>
+          <span id="teamCountChip" class="chip">Teams: 0</span>
+          <span id="runCountChip" class="chip">Runs: 0</span>
+          <span id="trackdriveLapsChip" class="chip">Trackdrive laps: n/a</span>
+        </div>
+      </div>
+      <pre id="debugLog"></pre>
+    </section>
+  </div>
+
+  <script src="https://unpkg.com/mqtt@5.3.0/dist/mqtt.min.js"></script>
+  <script src="scoreboard-config.js"></script>
+  <script src="scoreboard-utils.js"></script>
+  <script src="scoreboard-stores.js"></script>
+  <script src="scoreboard-engine.js"></script>
+  <script src="scoreboard-renderer.js"></script>
+  <script src="scoreboard-main.js"></script>
+  <script src="scoreboard.js"></script>
+</body>
+</html>
