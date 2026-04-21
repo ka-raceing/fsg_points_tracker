@@ -148,7 +148,8 @@
 
   const STORAGE_KEYS = {
     ev: "fsg_static_ev_points",
-    dv: "fsg_static_dv_points"
+    dv: "fsg_static_dv_points",
+    runOverrides: "fsg_run_overrides"
   };
 
   const ui = {

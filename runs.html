@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FSG EV Scoreboard</title>
+  <title>FSG Runs Editor</title>
   <link rel="stylesheet" href="scoreboard.css" />
 </head>
 <body data-cup="EV">
@@ -11,37 +11,35 @@
     <section class="card">
       <div class="header">
         <div>
-          <h1>FSG EV Scoreboard</h1>
-          <div class="subtitle">Live MQTT timing with adjusted-time scoring (time + C + OC).</div>
+          <h1>FSG Runs Overview & Editor</h1>
+          <div class="subtitle">Live run list with manual edits for cones, offtracks, DNF status, and more.</div>
         </div>
         <div class="toolbar">
           <a class="nav-link" href="index.html">Home</a>
+          <a class="nav-link" href="ev.html">EV page</a>
           <a class="nav-link" href="dv.html">DV page</a>
-          <a class="nav-link" href="runs.html">Runs editor</a>
           <span id="connectionBadge" class="badge status-bad">Offline</span>
           <span id="updateBadge" class="badge">No message yet</span>
           <button id="reconnectBtn">Reconnect MQTT</button>
           <button id="clearDebugBtn" class="secondary">Clear Debug</button>
+          <button id="clearRunOverridesBtn" class="secondary">Clear All Run Edits</button>
         </div>
       </div>
+
       <div class="toolbar" style="margin-top: 10px;">
         <label class="file-label">
-          EV static file
-          <input id="staticFile" type="file" accept=".txt,.csv" />
-        </label>
-        <label class="file-label">
-          EV penalties file
-          <input id="penaltiesFile" type="file" accept=".txt,.csv" />
+          Team/Event filter
+          <input id="runFilterInput" type="text" placeholder="car id, team, event" />
         </label>
       </div>
       <div class="help" style="margin-top: 10px;">
-        EV static format: <strong>car_id,engineering_design,cost_manufacturing,business_plan,efficiency</strong><br>
-        EV penalties format: <strong>car_id,penalty_points</strong>
+        Changes are stored in local storage and immediately affect scoring on the EV/DV pages.<br>
+        You can set <strong>status</strong> or <strong>result</strong> to <strong>dnf</strong> to force an invalid run.
       </div>
     </section>
 
     <section>
-      <article id="board" class="card"></article>
+      <article id="runsBoard" class="card"></article>
     </section>
 
     <section class="card debug">
@@ -51,7 +49,7 @@
           <span id="msgCountChip" class="chip">Messages: 0</span>
           <span id="teamCountChip" class="chip">Teams: 0</span>
           <span id="runCountChip" class="chip">Runs: 0</span>
-          <span id="trackdriveLapsChip" class="chip">Trackdrive laps: n/a</span>
+          <span id="trackdriveLapsChip" class="chip">Run overrides: 0</span>
         </div>
       </div>
       <pre id="debugLog"></pre>
@@ -62,9 +60,6 @@
   <script src="scoreboard-config.js"></script>
   <script src="scoreboard-utils.js"></script>
   <script src="scoreboard-stores.js"></script>
-  <script src="scoreboard-engine.js"></script>
-  <script src="scoreboard-renderer.js"></script>
-  <script src="scoreboard-main.js"></script>
-  <script src="scoreboard.js"></script>
+  <script src="runs-editor.js"></script>
 </body>
 </html>

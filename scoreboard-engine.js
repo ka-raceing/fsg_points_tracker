@@ -243,9 +243,13 @@
       return Math.min(0, value);
     }
 
+    isExcludedCarForScoring(carId) {
+      return String(carId || "").toUpperCase().includes("H");
+    }
+
     buildCompetition(cupKey) {
       const cupCfg = CONFIG.competitions[cupKey];
-      const carIds = this.liveStore.getAllCarIds();
+      const carIds = this.liveStore.getAllCarIds().filter((carId) => !this.isExcludedCarForScoring(carId));
 
       const rows = carIds.map((carId) => {
         const team = this.liveStore.teams.get(carId) || {

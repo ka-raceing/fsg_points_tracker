@@ -142,6 +142,7 @@
       this.teams = new Map();
       this.timekeepingByEvent = new Map();
       this.csdByEventRun = new Map();
+      this.runOverrides = this.readRunOverrideStorage();
       this.messageCount = 0;
       this.client = null;
       this.connected = false;
@@ -202,6 +203,116 @@
     setConnection(isConnected) {
       this.connected = isConnected;
       if (this.onUpdate) this.onUpdate();
+    }
+
+    readRunOverrideStorage() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.runOverrides);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch (error) {
+        this.logger.write("WARN", "Failed to parse run override storage", { error: String(error) });
+        return {};
+      }
+    }
+
+    saveRunOverrideStorage() {
+      localStorage.setItem(STORAGE_KEYS.runOverrides, JSON.stringify(this.runOverrides));
+    }
+
+    makeRunOverrideKey(sourceEvent, runId) {
+      return String(sourceEvent || "") + "::" + String(runId || "");
+    }
+
+    sanitizeRunOverridePatch(patch) {
+      if (!patch || typeof patch !== "object") return null;
+      const sanitized = {};
+
+      if (Object.prototype.hasOwnProperty.call(patch, "rawTime")) {
+        const n = toNumber(patch.rawTime);
+        sanitized.rawTime = n === null ? null : n;
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "runNumber")) {
+        const n = toNumber(patch.runNumber);
+        sanitized.runNumber = n === null ? null : Math.max(0, Math.floor(n));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "lapNumber")) {
+        const n = toNumber(patch.lapNumber);
+        sanitized.lapNumber = n === null ? null : Math.max(0, Math.floor(n));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "completedLaps")) {
+        const n = toPenaltyNumber(patch.completedLaps);
+        sanitized.completedLaps = Math.max(0, Math.floor(n));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "cones")) {
+        sanitized.cones = Math.max(0, Math.floor(toPenaltyNumber(patch.cones)));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "offCourses")) {
+        sanitized.offCourses = Math.max(0, Math.floor(toPenaltyNumber(patch.offCourses)));
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "status")) {
+        sanitized.status = String(patch.status || "").trim().toLowerCase();
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "result")) {
+        sanitized.result = String(patch.result || "").trim().toLowerCase();
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "modeText")) {
+        sanitized.modeText = String(patch.modeText || "").trim().toLowerCase();
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "isAutonomous")) {
+        if (patch.isAutonomous === null || patch.isAutonomous === undefined || patch.isAutonomous === "") {
+          sanitized.isAutonomous = null;
+        } else if (typeof patch.isAutonomous === "boolean") {
+          sanitized.isAutonomous = patch.isAutonomous;
+        } else {
+          const text = String(patch.isAutonomous).trim().toLowerCase();
+          sanitized.isAutonomous = text === "true" || text === "1" || text === "yes" || text === "y";
+        }
+      }
+
+      return Object.keys(sanitized).length > 0 ? sanitized : null;
+    }
+
+    setRunOverride(sourceEvent, runId, patch) {
+      const source = String(sourceEvent || "").trim();
+      const id = String(runId || "").trim();
+      if (!source || !id) return false;
+
+      const cleanPatch = this.sanitizeRunOverridePatch(patch);
+      if (!cleanPatch) return false;
+
+      const key = this.makeRunOverrideKey(source, id);
+      const existing = this.runOverrides[key] || {};
+      this.runOverrides[key] = { ...existing, ...cleanPatch };
+      this.saveRunOverrideStorage();
+      if (this.onUpdate) this.onUpdate();
+      return true;
+    }
+
+    clearRunOverride(sourceEvent, runId) {
+      const source = String(sourceEvent || "").trim();
+      const id = String(runId || "").trim();
+      if (!source || !id) return false;
+
+      const key = this.makeRunOverrideKey(source, id);
+      if (!Object.prototype.hasOwnProperty.call(this.runOverrides, key)) return false;
+
+      delete this.runOverrides[key];
+      this.saveRunOverrideStorage();
+      if (this.onUpdate) this.onUpdate();
+      return true;
+    }
+
+    clearAllRunOverrides() {
+      this.runOverrides = {};
+      this.saveRunOverrideStorage();
+      if (this.onUpdate) this.onUpdate();
+    }
+
+    getRunOverride(sourceEvent, runId) {
+      const key = this.makeRunOverrideKey(sourceEvent, runId);
+      return this.runOverrides[key] || null;
     }
 
     extractRuns(payload) {
@@ -299,7 +410,6 @@
     }
 
     normalizeRun(run, eventSource) {
-      const runId = normId(run.run_id ?? run.id);
       const carIdRaw = run.car_id ?? run.carId ?? run.team_id ?? run.teamId;
       if (carIdRaw === null || carIdRaw === undefined) return null;
       const carId = normId(carIdRaw);
@@ -325,6 +435,7 @@
       const result = String(run.result ?? "").toLowerCase();
       const lapNumber = toNumber(run.lap ?? run.lap_number ?? run.lapNumber ?? run.current_lap ?? run.currentLap);
       const completedLaps = this.extractCompletedLaps(run, lapNumber);
+      const timestamp = toNumber(run.timestamp ?? run.updated_at ?? run.updatedAt ?? run.created_at ?? run.createdAt);
 
       const modeText = String(
         run.mode ??
@@ -337,6 +448,17 @@
 
       const autonomousRaw = run.is_autonomous ?? run.isAutonomous ?? run.autonomous ?? run.driverless;
       const isAutonomous = autonomousRaw === true || String(autonomousRaw).toLowerCase() === "true";
+      const explicitRunId = normId(run.run_id ?? run.runId ?? run.id);
+      const syntheticRunId = [
+        eventSource,
+        carId,
+        runNumber === null ? "" : String(runNumber),
+        rawTime === null ? "" : String(rawTime),
+        status,
+        result,
+        lapNumber === null ? "" : String(lapNumber)
+      ].join("|");
+      const runId = explicitRunId || syntheticRunId;
 
       return {
         runId,
@@ -352,7 +474,7 @@
         completedLaps,
         modeText,
         isAutonomous,
-        timestamp: run.timestamp || Date.now()
+        timestamp: timestamp === null ? null : timestamp
       };
     }
 
@@ -456,13 +578,52 @@
 
       return forCar.map((run) => {
         const csd = run.runId ? (csdMap.get(run.runId) || null) : null;
-        return {
+        const merged = {
           ...run,
           cones: csd ? csd.cones : run.cones,
           offCourses: csd ? csd.offCourses : run.offCourses,
           judgeScore: csd ? csd.judgeScore : 0
         };
+
+        const override = this.getRunOverride(sourceEvent, run.runId);
+        if (!override) return merged;
+
+        return {
+          ...merged,
+          ...override,
+          // Ensure numeric penalty fields remain numbers after override merge.
+          cones: toPenaltyNumber(override.cones ?? merged.cones),
+          offCourses: toPenaltyNumber(override.offCourses ?? merged.offCourses),
+          completedLaps: Math.max(0, Math.floor(toPenaltyNumber(override.completedLaps ?? merged.completedLaps)))
+        };
       });
+    }
+
+    getAllEnrichedRuns() {
+      const rows = [];
+      const sources = Array.from(this.timekeepingByEvent.keys()).sort((a, b) => a.localeCompare(b));
+      for (const sourceEvent of sources) {
+        const runs = this.timekeepingByEvent.get(sourceEvent) || [];
+        const carIds = new Set(runs.map((run) => run.carId));
+        for (const carId of carIds) {
+          rows.push(...this.getEnrichedRunsForEvent(sourceEvent, carId));
+        }
+      }
+
+      rows.sort((a, b) => {
+        const ta = Number.isFinite(Number(a.timestamp)) ? Number(a.timestamp) : Number.POSITIVE_INFINITY;
+        const tb = Number.isFinite(Number(b.timestamp)) ? Number(b.timestamp) : Number.POSITIVE_INFINITY;
+        if (ta !== tb) return ta - tb;
+        const ea = String(a.sourceEvent || "");
+        const eb = String(b.sourceEvent || "");
+        if (ea !== eb) return ea.localeCompare(eb);
+        const ca = String(a.carId || "");
+        const cb = String(b.carId || "");
+        if (ca !== cb) return ca.localeCompare(cb, undefined, { numeric: true });
+        return String(a.runId || "").localeCompare(String(b.runId || ""));
+      });
+
+      return rows;
     }
 
     getStateSummary() {
