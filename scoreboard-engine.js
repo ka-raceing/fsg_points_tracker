@@ -16,6 +16,10 @@
 
     isRunValid(run, eventCfg) {
       if (run.rawTime === null || run.rawTime <= 0) return false;
+
+      // EV D 9.2.1: Driverless Skidpad runs above 25s (raw, without penalties) are disqualified.
+      if (eventCfg && eventCfg.key === "autonomous_skidpad" && run.rawTime > 25) return false;
+
       const status = run.status || "";
       const result = run.result || "";
       const badStatus = ["dnf", "disqualified", "dns", "did_not_finish", "did_not_start"];
@@ -34,6 +38,19 @@
         ? (eventCfg.offCoursePenaltySec || 0) * toPenaltyNumber(run.offCourses)
         : 0;
       return base + conePenalty + offCoursePenalty;
+    }
+
+    isManualModeRun(run) {
+      if (!run) return false;
+      if (run.isAutonomous === true) return false;
+
+      const mode = String(run.modeText || "").toLowerCase();
+      if (!mode) return true;
+      if (mode.includes("manual")) return true;
+      if (mode.includes("autonomous") || mode.includes("driverless") || mode.includes("dv") || mode.includes("auto")) {
+        return false;
+      }
+      return true;
     }
 
     getDcAutocrossTmax(eventCfg) {
@@ -240,7 +257,10 @@
 
         const dynamic = {};
         for (const eventCfg of cupCfg.dynamicEvents) {
-          const runs = this.liveStore.getEnrichedRunsForEvent(eventCfg.source, carId);
+          const allRuns = this.liveStore.getEnrichedRunsForEvent(eventCfg.source, carId);
+          const runs = (cupKey === "EV" && eventCfg.key === "acceleration")
+            ? allRuns.filter((run) => this.isManualModeRun(run))
+            : allRuns;
           const valid = runs
             .filter((run) => this.isRunValid(run, eventCfg))
             .map((run) => ({ ...run, adjusted: this.adjustedTime(run, eventCfg) }))
@@ -263,9 +283,37 @@
         };
       });
 
+      // Global Nall: teams with at least one valid manual or autonomous run.
+      const nAll = rows.filter((row) => {
+        return cupCfg.dynamicEvents.some((eventCfg) => {
+          const eventState = row.dynamic[eventCfg.key];
+          return !!(eventState && eventState.best);
+        });
+      }).length;
+
+      // EV-specific Nall per autonomous event, counting each team only once
+      // across its manual + autonomous counterpart.
+      const nAllByEvent = {};
+      if (cupKey === "EV") {
+        const nAllPairs = {
+          autonomous_skidpad: ["skidpad", "autonomous_skidpad"],
+          autonomous_acceleration: ["acceleration", "autonomous_acceleration"]
+        };
+
+        for (const [eventKey, pairedKeys] of Object.entries(nAllPairs)) {
+          nAllByEvent[eventKey] = rows.filter((row) => {
+            return pairedKeys.some((key) => {
+              const eventState = row.dynamic[key];
+              return !!(eventState && eventState.best);
+            });
+          }).length;
+        }
+      }
+
       const fastestByEvent = {};
       const bestAdjustedByEvent = {};
       const auxByEventByCar = {};
+      const rankByEventByCar = {};
       for (const eventCfg of cupCfg.dynamicEvents) {
         let fastest = null;
         for (const row of rows) {
@@ -303,6 +351,18 @@
           fastestByEvent[eventCfg.key] = tMin;
           bestAdjustedByEvent[eventCfg.key] = tMin;
         }
+
+        if (cupKey === "EV" && eventCfg.key === "autonomous_skidpad") {
+          const rankedRows = rows
+            .filter((row) => row.dynamic[eventCfg.key] && row.dynamic[eventCfg.key].best)
+            .slice()
+            .sort((a, b) => a.dynamic[eventCfg.key].best.adjusted - b.dynamic[eventCfg.key].best.adjusted);
+
+          rankByEventByCar[eventCfg.key] = {};
+          rankedRows.forEach((row, index) => {
+            rankByEventByCar[eventCfg.key][row.carId] = index + 1;
+          });
+        }
       }
 
       for (const row of rows) {
@@ -317,14 +377,29 @@
           const auxEventData = auxByEventByCar[eventCfg.key]
             ? auxByEventByCar[eventCfg.key][row.carId]
             : null;
-          const pts = this.computeEventPoints(
-            eventCfg,
-            best,
-            fastest,
-            bestAdjustedByEvent[eventCfg.key],
-            eventState,
-            auxEventData
-          );
+
+          let pts;
+          if (cupKey === "EV" && eventCfg.key === "autonomous_skidpad") {
+            // EV D 9.2.2: P = Pmax * (Nall + 1 - Rank) / Nall
+            const rankByCar = rankByEventByCar[eventCfg.key] || {};
+            const rank = best ? Number(rankByCar[row.carId]) : null;
+            const nAllForEvent = Number(nAllByEvent[eventCfg.key] || 0);
+            if (!best || !rank || nAllForEvent <= 0) {
+              pts = 0;
+            } else {
+              pts = clamp(eventCfg.maxPoints * (nAllForEvent + 1 - rank) / nAllForEvent, 0, eventCfg.maxPoints);
+            }
+          } else {
+            pts = this.computeEventPoints(
+              eventCfg,
+              best,
+              fastest,
+              bestAdjustedByEvent[eventCfg.key],
+              eventState,
+              auxEventData
+            );
+          }
+
           row.dynamicPoints[eventCfg.key] = pts;
           row.dynamicAux[eventCfg.key] = auxEventData;
           row.dynamicTotal += pts;
@@ -361,7 +436,9 @@
         label: cupCfg.label,
         config: cupCfg,
         rows,
-        fastestByEvent
+        fastestByEvent,
+        nAll,
+        nAllByEvent
       };
     }
   }

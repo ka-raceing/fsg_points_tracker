@@ -35,6 +35,18 @@
     }
 
     async function loadBaseData() {
+      if (FSG.pageCup === "EV") {
+        const staticCount = await staticStore.loadBaseFile("EV", "static", "ev_ede.csv");
+        const penaltyCount = await staticStore.loadBaseFile("EV", "penalties", "ev_penelties.csv");
+        logger.write("INFO", "EV preload completed", {
+          staticFile: "ev_ede.csv",
+          penaltiesFile: "ev_penelties.csv",
+          staticImported: staticCount,
+          penaltiesImported: penaltyCount
+        });
+        return;
+      }
+
       await staticStore.loadBaseData(FSG.pageCup);
     }
 

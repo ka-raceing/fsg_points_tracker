@@ -14,11 +14,23 @@
 
   function normId(value) {
     if (value === null || value === undefined) return "";
-    return String(value).trim();
+    const id = String(value).trim();
+    if (!id) return "";
+
+    // Normalize numeric IDs so values like 033 and 33 map to the same team.
+    if (/^\d+$/.test(id)) {
+      return String(Number(id));
+    }
+
+    return id;
   }
 
   function fmtTime(seconds) {
     return seconds === null ? "-" : seconds.toFixed(3) + "s";
+  }
+
+  function fmtTimePrecise(seconds) {
+    return seconds === null ? "-" : seconds.toFixed(5) + "s";
   }
 
   function fmtPoints(points) {
@@ -67,6 +79,7 @@
     toPenaltyNumber,
     normId,
     fmtTime,
+    fmtTimePrecise,
     fmtPoints,
     clamp,
     DebugLog

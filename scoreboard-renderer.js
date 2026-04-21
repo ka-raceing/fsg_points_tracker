@@ -6,6 +6,7 @@
   const pageCup = FSG.pageCup;
   const utils = FSG.utils;
   const fmtTime = utils.fmtTime;
+  const fmtTimePrecise = utils.fmtTimePrecise;
   const fmtPoints = utils.fmtPoints;
 
   class Renderer {
@@ -83,6 +84,33 @@
 
     renderBoard(cupKey, mountEl) {
       const board = this.engine.buildCompetition(cupKey);
+      const nAll = Number(board.nAll || 0);
+      const nAllByEvent = board.nAllByEvent || {};
+      const evRankModeEventKeys = cupKey === "EV"
+        ? new Set(["autonomous_skidpad", "autonomous_acceleration"])
+        : new Set();
+
+      const rankInfoByEvent = {};
+      for (const eventCfg of board.config.dynamicEvents) {
+        if (!evRankModeEventKeys.has(eventCfg.key)) continue;
+        const rankedRows = board.rows
+          .filter((row) => row.dynamic[eventCfg.key] && row.dynamic[eventCfg.key].best)
+          .slice()
+          .sort((a, b) => a.dynamic[eventCfg.key].best.adjusted - b.dynamic[eventCfg.key].best.adjusted);
+
+        const rankByCarId = new Map();
+        rankedRows.forEach((row, index) => {
+          rankByCarId.set(row.carId, index + 1);
+        });
+
+        rankInfoByEvent[eventCfg.key] = {
+          rankByCarId,
+          rankedCount: rankedRows.length,
+          totalTeams: board.rows.length,
+          nAll: Number(nAllByEvent[eventCfg.key] || nAll)
+        };
+      }
+
       const dynamicHeaders = board.config.dynamicEvents.map((eventCfg) => {
         return "<th>" + eventCfg.label + "<br><span class=\"muted\">/" + eventCfg.maxPoints + "</span></th>";
       }).join("");
@@ -102,6 +130,9 @@
           const aux = row.dynamicAux ? row.dynamicAux[eventCfg.key] : null;
           const fastest = board.fastestByEvent[eventCfg.key];
           const isFast = best && fastest !== null && Math.abs(best.adjusted - fastest) < 1e-9;
+          const showRankMode = evRankModeEventKeys.has(eventCfg.key);
+          const rankInfo = rankInfoByEvent[eventCfg.key] || null;
+          const rank = rankInfo ? rankInfo.rankByCarId.get(row.carId) : null;
           const eventState = row.dynamic[eventCfg.key];
 
           const trackdriveMeta = (() => {
@@ -124,7 +155,7 @@
           const penaltyText = " +" + best.cones + "c +" + best.offCourses + "oc";
           const speedLine =
             "<span class=\"num\">" + fmtPoints(pts) + "</span> " +
-            "<span class=\"muted\">(" + fmtTime(best.rawTime) + penaltyText + " => " + fmtTime(best.adjusted) + ")</span>";
+            "<span class=\"muted\">(" + fmtTime(best.rawTime) + penaltyText + " => " + fmtTime(best.adjusted) + "; precise " + fmtTimePrecise(best.adjusted) + ")</span>";
 
           let runSlotInfo = "";
           if (eventCfg.scoringModel === "dc_autocross" && aux) {
@@ -137,7 +168,9 @@
           }
 
           return "<td class=\"event-cell\">" +
-            (isFast ? "<span class=\"fastest\">Fastest</span>" : "") +
+            (showRankMode
+              ? (rank ? "<span class=\"muted\">Rank " + rank + "/" + rankInfo.nAll + " (Nall)</span>" : "")
+              : (isFast ? "<span class=\"fastest\">Fastest</span>" : "")) +
             speedLine +
             runSlotInfo +
             "<span class=\"live\">LIVE</span>" +
@@ -190,6 +223,12 @@
       }).join("");
 
       const fastestChips = board.config.dynamicEvents.map((eventCfg) => {
+        if (evRankModeEventKeys.has(eventCfg.key)) {
+          const rankInfo = rankInfoByEvent[eventCfg.key];
+          const rankedCount = rankInfo ? rankInfo.rankedCount : 0;
+          const nAllValue = rankInfo ? rankInfo.nAll : nAll;
+          return "<span class=\"chip\">" + eventCfg.label + " ranking: " + rankedCount + "/" + nAllValue + " (Nall)</span>";
+        }
         const f = board.fastestByEvent[eventCfg.key];
         return "<span class=\"chip\">" + eventCfg.label + " fastest: " + (f === null ? "none" : fmtTime(f)) + "</span>";
       }).join("");

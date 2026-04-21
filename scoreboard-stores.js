@@ -34,8 +34,9 @@
     }
 
     get(cup, carId) {
-      if (cup === "DV") return this.dv[carId] || { engineering_design: 0, penalties: 0 };
-      return this.ev[carId] || {
+      const id = normId(carId);
+      if (cup === "DV") return this.dv[id] || { engineering_design: 0, penalties: 0 };
+      return this.ev[id] || {
         engineering_design: 0,
         cost_manufacturing: 0,
         business_plan: 0,
@@ -46,8 +47,10 @@
 
     set(cup, carId, field, value) {
       const target = cup === "DV" ? this.dv : this.ev;
-      if (!target[carId]) target[carId] = {};
-      target[carId][field] = value;
+      const id = normId(carId);
+      if (!id) return;
+      if (!target[id]) target[id] = {};
+      target[id][field] = value;
       this.save();
     }
 
@@ -72,7 +75,7 @@
         if (cols.length < 2) continue;
         if (/car/i.test(cols[0])) continue;
 
-        const carId = cols[0];
+        const carId = normId(cols[0]);
         if (!carId) continue;
 
         if (kind === "penalties") {
@@ -323,6 +326,18 @@
       const lapNumber = toNumber(run.lap ?? run.lap_number ?? run.lapNumber ?? run.current_lap ?? run.currentLap);
       const completedLaps = this.extractCompletedLaps(run, lapNumber);
 
+      const modeText = String(
+        run.mode ??
+        run.run_mode ??
+        run.driving_mode ??
+        run.vehicle_mode ??
+        run.operation_mode ??
+        ""
+      ).toLowerCase();
+
+      const autonomousRaw = run.is_autonomous ?? run.isAutonomous ?? run.autonomous ?? run.driverless;
+      const isAutonomous = autonomousRaw === true || String(autonomousRaw).toLowerCase() === "true";
+
       return {
         runId,
         carId,
@@ -335,6 +350,8 @@
         cones: toPenaltyNumber(run.cones ?? run.c ?? run.cone_count),
         offCourses: toPenaltyNumber(run.off_courses ?? run.offCourses ?? run.oc),
         completedLaps,
+        modeText,
+        isAutonomous,
         timestamp: run.timestamp || Date.now()
       };
     }
